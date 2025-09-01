@@ -1,5 +1,8 @@
 pandas
+dotenv
+openai
 plotly
+matplotlib
 tensorflow==2.19.1
 tensorflow-recommenders==0.7.3
 tensorflow_datasets
