@@ -23,24 +23,13 @@ def load_data(data_url: str) -> pd.DataFrame:
 
 def df_to_tf_dataset(df):
     """Convert a DataFrame to a TensorFlow dataset."""
-    df["authors"] = df["authors"].apply(
-        lambda x: ",".join(x) if isinstance(x, list) else ""
-    )
-    df["genres"] = df["genres"].apply(
-        lambda x: ",".join(x) if isinstance(x, list) else ""
-    )
-
-    return tf.data.Dataset.from_tensor_slices(
-        {
-            "user_id": df["user_id"].astype(str).values,
-            "book_id": df["book_id"].astype(str).values,
-            "title": df["title"].astype(str).values,
-            "authors": df["authors"].astype(str).values,
-            "genres": df["genres"].astype(str).values,
-            "average_rating": df["average_rating"].values.astype("float32"),
-            "ratings_count": df["ratings_count"].values.astype("float32"),
-        }
-    )
+    try:
+        ratings_tf = tf.data.Dataset.from_tensor_slices(df.to_dict("list"))
+        logger.debug("DataFrame converted to TensorFlow dataset")
+        return ratings_tf
+    except Exception as e:
+        logger.error("Error converting DataFrame to TensorFlow dataset: %s", e)
+        raise
 
 
 def preprocess_data(
@@ -56,12 +45,11 @@ def preprocess_data(
 
         merged_df = ratings_df.merge(books_features, on="book_id", how="left")
 
-        df = df_to_tf_dataset(merged_df)
+        tf = df_to_tf_dataset(merged_df)
+        return tf
     except KeyError as e:
         logger.error("Missing column in the dataframe: %s", e)
         raise
     except Exception as e:
         logger.error("Unexpected error during preprocessing: %s", e)
         raise
-
-    return df

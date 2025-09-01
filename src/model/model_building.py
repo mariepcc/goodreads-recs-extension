@@ -16,7 +16,7 @@ class UserModel(tf.keras.Model):
     def __init__(self, unique_user_ids, embedding_size=32):
         super().__init__()
 
-        self.age_embedding = tf.keras.Sequential(
+        self.age_embedding = tf.keras.equential(
             [
                 tf.keras.layers.IntegerLookup(
                     vocabulary=unique_user_ids, mask_token=None
