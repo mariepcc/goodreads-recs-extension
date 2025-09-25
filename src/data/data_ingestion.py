@@ -1,55 +1,115 @@
-import pandas as pd
 import logging
-
+import pandas as pd
+import numpy as np
 import tensorflow as tf
+from ast import literal_eval
 
 logger = logging.getLogger("data_ingestion")
 logger.setLevel(logging.DEBUG)
 
 
-def load_data(data_url: str) -> pd.DataFrame:
-    """Load data from a CSV file."""
-    try:
-        df = pd.read_csv(data_url)
-        logger.debug("Data loaded from %s", data_url)
-        return df
-    except pd.errors.ParserError as e:
-        logger.error("Failed to parse the CSV file: %s", e)
-        raise
-    except Exception as e:
-        logger.error("Unexpected error occurred while loading the data: %s", e)
-        raise
+def load_books():
+    books = pd.read_csv(
+        "https://raw.githubusercontent.com/malcolmosh/goodbooks-10k/master/books_enriched.csv",
+        index_col=[0],
+        converters={"genres": literal_eval, "authors": literal_eval},
+    )
+    logger.info(f"Books loaded: {len(books)}")
+    return books
 
 
-def df_to_tf_dataset(df):
-    """Convert a DataFrame to a TensorFlow dataset."""
-    try:
-        ratings_tf = tf.data.Dataset.from_tensor_slices(df.to_dict("list"))
-        logger.debug("DataFrame converted to TensorFlow dataset")
-        return ratings_tf
-    except Exception as e:
-        logger.error("Error converting DataFrame to TensorFlow dataset: %s", e)
-        raise
+def load_ratings():
+    ratings = pd.read_csv(
+        "https://raw.githubusercontent.com/malcolmosh/goodbooks-10k/master/ratings.csv"
+    )
+    logger.info(f"Ratings loaded: {len(ratings)}")
+    return ratings
 
 
-def preprocess_data(
-    books_df: pd.DataFrame, ratings_df: pd.DataFrame
-) -> tf.data.Dataset:
-    """Preprocess books and ratings datasets for a two-tower recommender."""
-    try:
-        logger.debug("Starting data preprocessing...")
+def merge_datasets(ratings, books):
+    ratings = ratings.merge(
+        books[["book_id", "average_rating"]], on="book_id", how="left"
+    )
+    logger.info("Ratings merged with books (avg_rating added).")
+    return ratings
 
-        books_features = books_df[
-            ["book_id", "title", "authors", "genres", "average_rating", "ratings_count"]
-        ].copy()
 
-        merged_df = ratings_df.merge(books_features, on="book_id", how="left")
+def split_users(ratings, train_ratio=0.8, seed=42):
+    users = ratings["user_id"].unique()
+    rng = np.random.default_rng(seed)
+    rng.shuffle(users)
 
-        tf = df_to_tf_dataset(merged_df)
-        return tf
-    except KeyError as e:
-        logger.error("Missing column in the dataframe: %s", e)
-        raise
-    except Exception as e:
-        logger.error("Unexpected error during preprocessing: %s", e)
-        raise
+    n_train = int(len(users) * train_ratio)
+    train_users = set(users[:n_train])
+    test_users = set(users[n_train:])
+
+    train_df = ratings[ratings["user_id"].isin(train_users)]
+    test_df = ratings[ratings["user_id"].isin(test_users)]
+
+    logger.info(f"Train users: {len(train_users)}, Test users: {len(test_users)}")
+    return train_df, test_df
+
+
+def make_leave_one_out(train_df):
+    rows = []
+
+    for user, user_ratings in train_df.groupby("user_id"):
+        if len(user_ratings) < 10:
+            continue
+
+        user_ratings = user_ratings.sample(frac=1, random_state=42)
+
+        target = user_ratings.iloc[0]
+        history = user_ratings.iloc[1:]
+
+        rows.append(
+            {
+                "user_id": user,
+                "user_history": history["book_id"].astype(str).tolist(),
+                "history_ratings": history["rating"].astype(float).tolist(),
+                "book_id": str(target["book_id"]),
+                "avg_rating": float(target["average_rating"]),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    logger.info(f"Leave-one-out train sample: {df.iloc[0]}")
+    return df
+
+
+# --- Convert to tf.data.Dataset ---
+def df_to_tf_dataset(df, batch_size=256, shuffle=True):
+    features = {
+        "user_history": tf.ragged.constant(df["user_history"].values),
+        "history_ratings": tf.ragged.constant(df["history_ratings"].values),
+        "book_id": tf.constant(df["book_id"].values, dtype=tf.string),
+        "avg_rating": tf.constant(df["avg_rating"].values, dtype=tf.float32),
+    }
+
+    ds = tf.data.Dataset.from_tensor_slices(features)
+    if shuffle:
+        ds = ds.shuffle(10000, seed=42)
+    ds = ds.batch(batch_size)
+    return ds
+
+
+def prepare_datasets():
+    books = load_books()
+    ratings = load_ratings()
+    ratings = merge_datasets(ratings, books)
+
+    train_df, test_df = split_users(ratings)
+
+    loo_train_df = make_leave_one_out(train_df)
+
+    train_ds = df_to_tf_dataset(loo_train_df, batch_size=256)
+    test_ds = df_to_tf_dataset(test_df, batch_size=256)
+
+    candidates_ds = tf.data.Dataset.from_tensor_slices(
+        {
+            "book_id": books["book_id"].values.astype("int32"),
+            "avg_rating": books["average_rating"].values.astype("float32"),
+        }
+    ).batch(256)
+
+    return train_ds, test_ds, candidates_ds
