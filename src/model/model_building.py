@@ -4,21 +4,25 @@ os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import os
 import numpy as np
+from dotenv import load_dotenv
 import logging
 import tensorflow as tf
 import tensorflow_recommenders as tfrs
 import mlflow
 from src.data.data_ingestion import prepare_datasets
 
+load_dotenv()
+
 logger = logging.getLogger("model_building")
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 
 class UserTower(tf.keras.Model):
     def __init__(
         self,
         unique_book_ids,
-        num_tokens,
         embedding_matrix,
         emb_dim=32,
         dropout_rate=0.2,
@@ -29,16 +33,15 @@ class UserTower(tf.keras.Model):
             [
                 tf.keras.layers.IntegerLookup(
                     vocabulary=unique_book_ids,
-                    oov_token=None,
-                    mask_token=0,
+                    oov_token=0,
+                    mask_token=None,
                 ),
                 tf.keras.layers.Embedding(
-                    input_dim=num_tokens + 1,
+                    input_dim=embedding_matrix.shape[0],
                     output_dim=embedding_matrix.shape[1],
                     embeddings_initializer=tf.keras.initializers.Constant(
                         embedding_matrix
                     ),
-                    mask_zero=True,
                     trainable=False,
                 ),
             ]
@@ -46,7 +49,7 @@ class UserTower(tf.keras.Model):
 
         self.attention = tf.keras.layers.MultiHeadAttention(
             num_heads=8,
-            key_dim=embedding_matrix.shape[1] + 1,  # 1536 embedding + 1 rating
+            key_dim=embedding_matrix.shape[1] + 1,  
         )
         self.pooling = tf.keras.layers.GlobalAveragePooling1D()
 
@@ -62,16 +65,16 @@ class UserTower(tf.keras.Model):
         user_history = inputs["user_history"]
         history_ratings = inputs["history_ratings"]
 
-        history_emb = self.book_embedding(user_history)  # (batch, seq_len, 1536)
+        history_emb = self.book_embedding(user_history)  
 
         mean_rating = tf.reduce_mean(
             history_ratings, axis=1, keepdims=True
-        )  # (batch, 1)
-        norm_ratings = history_ratings - mean_rating  # (batch, seq_len)
-        ratings_expanded = tf.expand_dims(norm_ratings, -1)  # (batch, seq_len, 1)
+        )  
+        norm_ratings = history_ratings - mean_rating  
+        ratings_expanded = tf.expand_dims(norm_ratings, -1)  
         concat_input = tf.concat(
             [history_emb, ratings_expanded], axis=-1
-        )  # (batch, seq_len, 1537)
+        ) 
 
         attn_out = self.attention(concat_input, concat_input)
 
@@ -86,7 +89,6 @@ class ItemTower(tf.keras.Model):
     def __init__(
         self,
         unique_book_ids,
-        num_tokens,
         embedding_matrix,
         emb_dim=32,
         dropout_rate=0.2,
@@ -99,11 +101,11 @@ class ItemTower(tf.keras.Model):
             [
                 tf.keras.layers.IntegerLookup(
                     vocabulary=unique_book_ids,
-                    oov_token=None,
+                    oov_token=0,
                     mask_token=None,
                 ),
                 tf.keras.layers.Embedding(
-                    input_dim=num_tokens + 1,
+                    input_dim=embedding_matrix.shape[0],
                     output_dim=embedding_matrix.shape[1],
                     embeddings_initializer=tf.keras.initializers.Constant(
                         embedding_matrix
@@ -138,7 +140,7 @@ class BookRetrievalModel(tfrs.models.Model):
 
         self.task = tfrs.tasks.Retrieval(
             metrics=tfrs.metrics.FactorizedTopK(
-                candidates=candidates_ds.map(item_tower)
+                candidates=candidates_ds.map(self.item_tower)
             )
         )
 
@@ -164,67 +166,61 @@ class BookRetrievalModel(tfrs.models.Model):
 class GoodreadsTrainer:
     def __init__(self):
         pass
-
-        print("Building candidates dataset...")
-        self.trainset = prepare_datasets()[0]
-        self.valset = prepare_datasets()[1]
-        self.candidates = prepare_datasets()[2]
-        print("Dataset preparation complete.")
+        print("GoodreadsTrainer initialized.")
+        logger.info("GoodreadsTrainer initialized.")
+        t, v, c = prepare_datasets()
+        self.trainset = t
+        self.testset = v
+        self.candidates = c
+        logger.info("Dataset preparation complete.")
 
     def train_model(self):
-        print("Starting training...")
-        embedding_matrix = np.load("../src/data/embeddings_matrix.npy")
-        print(f"Loaded embeddings: {embedding_matrix.shape}")
+        logger.info("Starting training...")
+        embedding_matrix = np.load("src/data/embeddings_matrix.npy")
+        logger.info(f"Loaded embeddings: {embedding_matrix.shape}")
 
         num_books, embedding_dim = embedding_matrix.shape
-        unique_book_ids = np.arange(num_books - 1)
+        unique_book_ids = np.arange(1, num_books)
 
-        print("Building towers...")
+        logger.info("Building towers...")
         self.user_tower = UserTower(
             unique_book_ids=unique_book_ids,
-            num_tokens=num_books,
             embedding_matrix=embedding_matrix,
         )
         self.item_tower = ItemTower(
             unique_book_ids=unique_book_ids,
-            num_tokens=num_books,
             embedding_matrix=embedding_matrix,
         )
-        print("Towers built.")
+        logger.info("Towers built.")
 
-        print("Building retrieval model...")
+        logger.info("Building retrieval model...")
         self.model = BookRetrievalModel(
             self.user_tower, self.item_tower, self.candidates
         )
 
         self.model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            metrics=[
-                tf.keras.metrics.Precision(name="precision"),
-                tf.keras.metrics.Recall(name="recall"),
-                tf.keras.metrics.Accuracy(name="accuracy"),
-            ],
+            optimizer=tf.keras.optimizers.Adam(0.001),
         )
-        print("Model compiled.")
+        logger.info("Model compiled.")
 
-        print("Connecting to MLflow...")
-        mlflow.set_tracking_uri(
-            "http://ec2-13-61-4-77.eu-north-1.compute.amazonaws.com:5000/"
-        )
+        logger.info("Connecting to MLflow...")
+        mlflow.set_tracking_uri(os.getenv("mlflow_tracking_uri"))
         mlflow.set_experiment("TTM Baseline")
-        print("MLflow connected.")
+        logger.info("MLflow connected.")
 
         mlflow.keras.autolog()
 
-        print("Starting MLflow run...")
-        with mlflow.start_run(run_name="two_tower_model_experiment"):
+        logger.info("Starting MLflow run...")
+        with mlflow.start_run(run_name="two_tower_model_experiment_2"):
             mlflow.log_param("optimizer", "Adam")
-            mlflow.log_param("learning_rate", 0.1)
-            mlflow.log_param("epochs", 5)
-            mlflow.log_param("loss", "sparse_categorical_crossentropy")
+            mlflow.log_param("learning_rate", 0.001)
+            mlflow.log_param("epochs", 15)
+            mlflow.log_param("batch_size", 256)
+            mlflow.log_param("loss", "tfrs.tasks.Retrieval")
             mlflow.log_param("embedding_dim", embedding_dim)
-            mlflow.log_param("num_books", num_books)
-            print("✅ MLflow parameters logged.")
+            mlflow.log_param("num_books", num_books - 1)
+            mlflow.log_param("num_users", len(self.trainset))
+            logger.info("MLflow parameters logged.")
 
             mlflow_callback = tf.keras.callbacks.LambdaCallback(
                 on_epoch_end=lambda epoch, logs: [
@@ -233,68 +229,27 @@ class GoodreadsTrainer:
                 ]
             )
 
-            print("Training model with .fit()...")
-            self.model = self.model.fit(
+            logger.info("Training model with .fit()...")
+            self.history = self.model.fit(
                 self.trainset,
-                epochs=5,
+                epochs=15,
                 callbacks=[mlflow_callback],
                 validation_data=self.testset,
+                verbose=1,
             )
-            print("Training finished.")
+            logger.info("Training finished.")
+            logger.info(self.model.summary())
 
-            print("Saving model to MLflow...")
-            mlflow.tensorflow.log_model(self.model, artifact_path="two_tower_model")
+            logger.info("Saving model to MLflow...")
+            mlflow.tensorflow.log_model(self.model, name="two_tower_model")
 
-            print("MLflow run completed. Run ID:", mlflow.active_run().info.run_id)
+            self.model.save("book_retrieval_model")
 
-
-"""
-            def compute_recall_at_k(model, test_users, true_items, k=10):
-                user_embs = model.user_tower(test_users)  # shape: (n_users, emb_dim)
-                item_embs = model.item_tower(
-                    np.arange(num_books)
-                )  # shape: (n_items, emb_dim)
-
-                scores = tf.linalg.matmul(
-                    user_embs, item_embs, transpose_b=True
-                )  # similarity
-                top_k = tf.math.top_k(scores, k=k).indices.numpy()  # top-k item IDs
-
-                hits = 0
-                for i, true_item in enumerate(true_items):
-                    if true_item in top_k[i]:
-                        hits += 1
-                return hits / len(test_users)
-
-            test_users = []
-            test_true_items = []
-
-            for user, true_item in testset.take(-1):
-                test_users.append(user.numpy())
-                test_true_items.append(true_item.numpy())
-
-            test_users = np.array(test_users)
-            test_true_items = np.array(test_true_items)
-
-            ks = [5, 10, 20]
-            recalls = []
-            for k in ks:
-                recall = compute_recall_at_k(model, test_users, test_true_items, k)
-                recalls.append(recall)
-                mlflow.log_metric(f"recall@{k}", recall)
-
-            plt.figure()
-            plt.plot(ks, recalls, marker="o")
-            plt.title("Recall@K")
-            plt.xlabel("K")
-            plt.ylabel("Recall")
-            plt.savefig("recall_at_k.png")
-            mlflow.log_artifact("recall_at_k.png")
-            plt.close()
-        """
+            logger.info(
+                "MLflow run completed. Run ID:", mlflow.active_run().info.run_id
+            )
 
 
 if __name__ == "__main__":
     trainer = GoodreadsTrainer()
-    trainer.get_datasets()
     trainer.train_model()

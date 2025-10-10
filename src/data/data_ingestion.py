@@ -52,37 +52,36 @@ def split_users(ratings, train_ratio=0.8, seed=42):
 
 def make_leave_one_out(train_df):
     rows = []
+    train_df = train_df.sample(frac=1, random_state=42)
 
     for user, user_ratings in train_df.groupby("user_id"):
         if len(user_ratings) < 10:
             continue
 
-        user_ratings = user_ratings.sample(frac=1, random_state=42)
-
         target = user_ratings.iloc[0]
-        history = user_ratings.iloc[1:]
+        history = user_ratings.iloc[1:21]
 
         rows.append(
             {
                 "user_id": user,
-                "user_history": history["book_id"].astype(str).tolist(),
+                "user_history": history["book_id"].astype(int).tolist(),
                 "history_ratings": history["rating"].astype(float).tolist(),
-                "book_id": str(target["book_id"]),
+                "book_id": int(target["book_id"]),
                 "avg_rating": float(target["average_rating"]),
             }
         )
 
     df = pd.DataFrame(rows)
-    logger.info(f"Leave-one-out train sample: {df.iloc[0]}")
     return df
 
 
-# --- Convert to tf.data.Dataset ---
 def df_to_tf_dataset(df, batch_size=256, shuffle=True):
+    df["book_id"] = df["book_id"].astype(float).astype(int)
+
     features = {
         "user_history": tf.ragged.constant(df["user_history"].values),
         "history_ratings": tf.ragged.constant(df["history_ratings"].values),
-        "book_id": tf.constant(df["book_id"].values, dtype=tf.string),
+        "book_id": tf.constant(df["book_id"].values, dtype=tf.int32),
         "avg_rating": tf.constant(df["avg_rating"].values, dtype=tf.float32),
     }
 
@@ -101,9 +100,10 @@ def prepare_datasets():
     train_df, test_df = split_users(ratings)
 
     loo_train_df = make_leave_one_out(train_df)
+    loo_test_df = make_leave_one_out(test_df)
 
     train_ds = df_to_tf_dataset(loo_train_df, batch_size=256)
-    test_ds = df_to_tf_dataset(test_df, batch_size=256)
+    test_ds = df_to_tf_dataset(loo_test_df, batch_size=256)
 
     candidates_ds = tf.data.Dataset.from_tensor_slices(
         {

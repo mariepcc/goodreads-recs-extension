@@ -1,10 +1,9 @@
 pandas
 dotenv
 openai
-plotly
+dotenv
 matplotlib
 tensorflow==2.19.1
 tensorflow-recommenders==0.7.3
-tensorflow_datasets
 tf_keras==2.19.0
 mlflow
