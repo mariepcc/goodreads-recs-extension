@@ -28,13 +28,9 @@ def format_book_text(row):
         if isinstance(row["genres"], list)
         else ""
     )
-    authors = (
-        f"Authors: {', '.join(row['authors'])}."
-        if isinstance(row["authors"], list)
-        else ""
-    )
+    
 
-    return " ".join([title, overview, genres, authors]).strip()
+    return " ".join([title, overview, genres]).strip()
 
 
 def get_embedding(text, model="text-embedding-3-small"):
