@@ -3,7 +3,12 @@ dotenv
 openai
 dotenv
 matplotlib
+seaborn
 tensorflow==2.19.1
 tensorflow-recommenders==0.7.3
 tf_keras==2.19.0
 mlflow
+boto3
+playwright
+bs4
+feedparser

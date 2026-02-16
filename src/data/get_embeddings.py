@@ -13,40 +13,40 @@ books_df = pd.read_csv(
     converters={"genres": literal_eval, "authors": literal_eval},
 )
 
-books_df.head()
-
 
 def format_book_text(row):
     title = f"Title: {row['title']}."
-    overview = (
-        f"Overview: {row['description'].lower()}."
-        if pd.notna(row.get("description"))
-        else ""
-    )
+    desc = str(row.get("description", ""))[:1000]
+    overview = f"Overview: {desc.lower()}."
     genres = (
         f"Genres: {', '.join(row['genres'])}."
         if isinstance(row["genres"], list)
         else ""
     )
-    
-
     return " ".join([title, overview, genres]).strip()
 
 
-def get_embedding(text, model="text-embedding-3-small"):
-    text = text.replace("\n", " ")
-    return client.embeddings.create(input=[text], model=model).data[0].embedding
+def get_embeddings_batch(texts, model="text-embedding-3-small"):
+    response = client.embeddings.create(input=texts, model=model)
+    return [item.embedding for item in response.data]
 
 
-embeddings_list = []
+all_embeddings = []
+batch_size = 100
 
-for idx, row in books_df.iterrows():
-    print(f"Embedding row {idx}: {row['title']}")
-    book_text = format_book_text(row)
-    emb = get_embedding(book_text)
-    embeddings_list.append(emb)
+for i in range(0, len(books_df), batch_size):
+    batch_rows = books_df.iloc[i : i + batch_size]
+    texts = [format_book_text(row) for _, row in batch_rows.iterrows()]
 
-embeddings_matrix = np.vstack(embeddings_list)
+    print(f"Processing batch {i} to {i + batch_size}...")
+    try:
+        batch_embs = get_embeddings_batch(texts)
+        all_embeddings.extend(batch_embs)
+    except Exception as e:
+        print(f"Error at batch {i}: {e}")
+        break
+
+embeddings_matrix = np.array(all_embeddings, dtype=np.float32)
 
 np.save("embeddings_matrix.npy", embeddings_matrix)
-print("Embeddings matrix shape:", embeddings_matrix.shape)
+print("Final shape:", embeddings_matrix.shape)
